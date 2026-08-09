@@ -1,0 +1,160 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "windows-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            },
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/forge-toolchain.cmake",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "clang-dev",
+            "displayName": "Clang Debug (Forge toolset, MSVC 19.29)",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build-clang-dev",
+            "cacheVariables": {
+                "FORGE_TOOLSET_COMPILER": "clang-cl",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "clang-prod",
+            "displayName": "Clang Release (Forge toolset, MSVC 19.29)",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build-clang-prod",
+            "cacheVariables": {
+                "FORGE_TOOLSET_COMPILER": "clang-cl",
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "msvc-dev",
+            "displayName": "MSVC Debug (Forge toolset, MSVC 19.29)",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build-msvc-dev",
+            "cacheVariables": {
+                "FORGE_TOOLSET_COMPILER": "msvc",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "msvc-prod",
+            "displayName": "MSVC Release (Forge toolset, MSVC 19.29)",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build-msvc-prod",
+            "cacheVariables": {
+                "FORGE_TOOLSET_COMPILER": "msvc",
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "linux-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            },
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_C_FLAGS_INIT": "-Wall",
+                "CMAKE_CXX_FLAGS_INIT": "-Wall -fno-rtti -fno-exceptions"
+            }
+        },
+        {
+            "name": "linux-gcc-dev",
+            "displayName": "Linux GCC Debug",
+            "inherits": "linux-base",
+            "binaryDir": "${sourceDir}/build-linux-gcc-dev",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "linux-gcc-prod",
+            "displayName": "Linux GCC Release",
+            "inherits": "linux-base",
+            "binaryDir": "${sourceDir}/build-linux-gcc-prod",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "linux-clang-dev",
+            "displayName": "Linux Clang Debug",
+            "inherits": "linux-base",
+            "binaryDir": "${sourceDir}/build-linux-clang-dev",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "linux-clang-prod",
+            "displayName": "Linux Clang Release",
+            "inherits": "linux-base",
+            "binaryDir": "${sourceDir}/build-linux-clang-prod",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "clang-dev",
+            "configurePreset": "clang-dev",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+        },
+        {
+            "name": "clang-prod",
+            "configurePreset": "clang-prod",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+        },
+        {
+            "name": "msvc-dev",
+            "configurePreset": "msvc-dev",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+        },
+        {
+            "name": "msvc-prod",
+            "configurePreset": "msvc-prod",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+        },
+        {
+            "name": "linux-gcc-dev",
+            "configurePreset": "linux-gcc-dev",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
+            "name": "linux-gcc-prod",
+            "configurePreset": "linux-gcc-prod",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
+            "name": "linux-clang-dev",
+            "configurePreset": "linux-clang-dev",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        },
+        {
+            "name": "linux-clang-prod",
+            "configurePreset": "linux-clang-prod",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+        }
+    ]
+}

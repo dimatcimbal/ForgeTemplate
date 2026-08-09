@@ -1,0 +1,6 @@
+[submodule "ForgeSrc"]
+	path = ForgeSrc
+	url = https://github.com/confettifx/the-forge.git
+[submodule "ForgeWiki"]
+	path = ForgeWiki
+	url = https://github.com/ConfettiFX/The-Forge.wiki.git

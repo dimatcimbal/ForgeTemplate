@@ -1,0 +1,5 @@
+# Single-maintainer repo — everything routes through one owner for now.
+# Pairs with branch protection's "require review from Code Owners" on main;
+# split this out per-module (e.g. /Renderer/, /AssetPipeline/) if/when more
+# maintainers join.
+* @dimatcimbal
