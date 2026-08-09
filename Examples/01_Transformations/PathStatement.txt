@@ -1,0 +1,22 @@
+# Forge's initFileSystem (Utilities/FileSystem/FileSystem.c's parse_path_statement) requires this
+# file to exist next to the exe, mapping resource-directory names to relative paths.
+#
+# RD_SHADER_BINARIES is genuinely read: addShader/initRootSignature (01_Transformations.cpp) load
+# through Forge's ResourceLoader, which resolves a shader/rootsig name to
+# "<RD_SHADER_BINARIES path>/<platform>/<name>" (Resources/ResourceLoader/ResourceLoader.cpp's
+# load_shader_stage_byte_code — "<platform>" is DIRECT3D12 on this backend). This value matches
+# 01_Transformations/CMakeLists.txt's SHADER_BIN_DIR (its FSL --binaryDestination) exactly, by
+# construction, kept in sync deliberately.
+#
+# RD_TEXTURES/RD_FONTS are deliberately left unmapped, not omitted by oversight — an unmapped
+# resource directory resolves to gResourceDirectories' zero-initialized default (plain CWD, i.e.
+# next to the exe, confirmed directly against FileSystem.c), and CMakeLists.txt's own POST_BUILD
+# step copies the skybox textures/font there flat/by-relative-name to match.
+#
+# Every path below needs a trailing "/" — Utilities/FileSystem/FileSystem.c's parse_path_statement
+# stores each value verbatim, and OS/Windows/WindowsFileSystem.cpp's PlatformOpenFile builds the
+# final path with a plain strcat_s(mPath) + strcat_s(fileName), no separator inserted between them.
+# Without the trailing slash this silently looks for a single concatenated path
+# ("ShadersDIRECT3D12/...") instead of a real nested one ("Shaders/DIRECT3D12/...").
+RD_SHADER_BINARIES = Shaders/
+RD_GPU_CONFIG = GPUCfg/

@@ -1,0 +1,7 @@
+# Normalize line endings to LF for every text file this repo actually tracks, regardless of a given
+# contributor's own core.autocrlf setting, OS, or editor — this repo's own files (Makefile,
+# CMakeLists.txt, cmake/*.cmake, workflow YAML) are consumed by tools (GNU Make, WSL builds, Linux
+# CI) that don't need CRLF and shouldn't depend on one machine's global git config getting it right.
+# Does not touch ForgeSrc/ForgeWiki (git submodules, tracked as gitlinks here — their own working
+# trees are governed by their own repos, never this file).
+* text=auto eol=lf
