@@ -1,0 +1,225 @@
+name: Pull Request to Branch Main
+
+# Adapted (not copied) from a sibling Forge-based project's own pr_to_main.yml
+# (DXStarter/.github/workflows/pr_to_main.yml) — that project is Windows-only, vcpkg-driven, and
+# builds via MSBuild-discovered vcpkg + a single clang-cl preset pair. None of that applies here:
+# no vcpkg anywhere (every dependency is vendored inside the ForgeSrc submodule), no MSBuild, and
+# this template spans Windows + Linux across 8 presets (CMakePresets.json's own hostSystemName
+# gating). No format_check job either — unlike DXStarter, this repo has no first-party C++ source
+# of its own to clang-format: every Examples/* .cpp is an unmodified vendored copy, ForgeSrc itself
+# is a submodule this template never edits, and the only source this repo actually owns is
+# CMakeLists.txt/Makefile/*.cmake, none of which clang-format applies to.
+#
+# One job per platform, each running the Makefile's own host-OS-default dev preset then its
+# -prod counterpart (mirrors DXStarter's own "build debug, then build release" shape) — msvc-dev/
+# msvc-prod on Windows (the one toolchain proven to build this vendored tree with /W4 /WX and zero
+# suppressions, see Makefile's own DEFAULT_PRESET comment) and linux-gcc-dev/linux-gcc-prod on
+# Linux (Makefile's own Linux default). clang-dev/clang-prod and linux-clang-dev/linux-clang-prod
+# are real, working presets too but deliberately not covered here yet, same one-flagship-compiler-
+# per-platform scope DXStarter's own CI used (it never touched its own msvc-dev/msvc-prod presets
+# either) — a matrix expansion to cover all 8 presets is a real, separate scope decision, not done
+# here.
+#
+# Runner images pinned to windows-2022/ubuntu-24.04 explicitly rather than windows-latest/
+# ubuntu-latest — this workflow's own extra setup steps below were verified against those exact
+# images' published tool manifests (actions/runner-images), and "latest" drifting to a newer image
+# could silently invalidate that verification (e.g. a different Windows SDK/VS toolset baseline).
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-windows:
+    name: Build (Windows, msvc-dev / msvc-prod)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # ForgeWiki is reference material only (never built, see root CMakeLists.txt) — skipped here
+      # to save clone time. ForgeSrc needs a real, full checkout (globbed by every module's own
+      # CMakeLists.txt), but not its full history — --depth 1 is enough for a CI build.
+      - name: Init ForgeSrc submodule (shallow; ForgeWiki skipped, not needed to build)
+        run: |
+          git submodule update --init --depth 1 ForgeSrc
+          echo "DONE: init ForgeSrc submodule"
+
+      # Cache key includes ForgeSrc's own short SHA (not just a fixed version suffix) so bumping the
+      # submodule forces a fresh Art.zip fetch+extract rather than risking a stale cached subset
+      # against a newer Forge source tree — a deliberate choice to re-check on every ForgeSrc bump
+      # even though most bumps won't actually change what Examples/* needs, since Art.zip itself is
+      # a separate, independently-versioned distribution with no direct tie to ForgeSrc's own git
+      # history otherwise.
+      - name: Get ForgeSrc short SHA
+        id: forgesrc-sha
+        run: |
+          $sha = git -C ForgeSrc rev-parse --short HEAD
+          echo "sha=$sha" >> $env:GITHUB_OUTPUT
+          echo "DONE: ForgeSrc short SHA is $sha"
+
+      # Examples/01_Transformations needs a handful of real Forge art assets (skybox textures + a
+      # font) that ForgeSrc never vendors itself (see build-agent.md gotcha #10) - upstream's own
+      # real source is a ~1.75GB Art.zip covering every Unit_Tests example, never fetched
+      # automatically anywhere in this template. Version suffix still bumped by hand on top of the
+      # SHA whenever the wanted-file list below changes on its own (e.g. a *different* Examples/*
+      # needs more assets, independent of any ForgeSrc bump) — same idea as
+      # cmake/forge-shaders.cmake's own explicit file list.
+      - name: Restore cached Forge Art assets
+        id: cache-art
+        uses: actions/cache@v4
+        with:
+          path: ForgeSrc/Art
+          key: forge-art-01_transformations-v1-${{ steps.forgesrc-sha.outputs.sha }}
+
+      # Only runs on a genuine cache miss - full download + full extract (no selective-member
+      # extraction; tar.exe's own zip support isn't reliable to depend on here, confirmed directly:
+      # this repo's own dev machine resolves `tar` to Git for Windows' bundled GNU tar, which can't
+      # read zip at all, and the runner's PATH ordering isn't guaranteed to favor the native bsdtar
+      # instead - Expand-Archive has no such ambiguity, it's a real PowerShell built-in). Every run
+      # after this one just restores the small extracted subset from cache above, no network at all.
+      - name: Download Forge Art assets (cache miss only)
+        if: steps.cache-art.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $zipPath = Join-Path $env:RUNNER_TEMP "Art.zip"
+          $tmp = Join-Path $env:RUNNER_TEMP "art-extract"
+          Invoke-WebRequest -Uri "http://www.conffx.com/Art.zip" -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $tmp -Force
+
+          New-Item -ItemType Directory -Force -Path ForgeSrc/Art/Textures/dds, ForgeSrc/Art/Fonts/TitilliumText | Out-Null
+          Get-ChildItem -Path $tmp -Recurse -Filter "Skybox_*.tex" | Copy-Item -Destination ForgeSrc/Art/Textures/dds
+          Get-ChildItem -Path $tmp -Recurse -Filter "TitilliumText-Bold.otf" | Copy-Item -Destination ForgeSrc/Art/Fonts/TitilliumText
+
+          Remove-Item -Recurse -Force $tmp, $zipPath
+          echo "DONE: download Forge Art assets"
+
+      # Confirmed missing on the windows-2022 runner image, not assumed: its own published component
+      # list (actions/runner-images Windows2022-Readme.md) lists
+      # Microsoft.VisualStudio.Component.VC.14.29.16.11.ARM/ARM64 but not the .x86.x64 sibling
+      # cmake/forge-toolchain.cmake actually requires (Common_3/Application/Config.h whitelists
+      # exactly this one MSVC toolset, 14.29.x / VS2019 16.11 / _MSC_VER 1929). Windows SDKs the
+      # toolchain file globs for (10.0.22621.0/10.0.26100.0) are already present on this image, so
+      # only the compiler toolset itself needs adding.
+      - name: Install MSVC v142 (14.29-16.11) x86/x64 build tools
+        shell: pwsh
+        run: |
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+          $vswhere   = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath    = & $vswhere -latest -property installationPath
+          & $installer modify --installPath "$vsPath" `
+            --add Microsoft.VisualStudio.Component.VC.14.29.16.11.x86.x64 `
+            --quiet --norestart --nocache
+          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
+            throw "vs_installer modify failed with exit code $LASTEXITCODE"
+          }
+
+      # Confirmed missing too, same source — GNU Make doesn't appear anywhere in the image's own
+      # tool manifest (Git for Windows/MSYS2 are present, but neither puts a make.exe on PATH by
+      # default). Ninja (1.13.2) and CMake are already present, no install needed for those.
+      - name: Install GNU Make
+        shell: pwsh
+        run: choco install make -y
+
+      - name: Build (msvc-dev)
+        shell: pwsh
+        run: make build
+
+      - name: Build (msvc-prod)
+        shell: pwsh
+        run: make release
+
+  build-linux:
+    name: Build (Linux, linux-gcc-dev / linux-gcc-prod)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Init ForgeSrc submodule (shallow; ForgeWiki skipped, not needed to build)
+        run: |
+          git submodule update --init --depth 1 ForgeSrc
+          echo "DONE: init ForgeSrc submodule"
+
+      # gcc/g++/clang/make/cmake/ninja/pkg-config are all already present on ubuntu-24.04 (confirmed
+      # against actions/runner-images Ubuntu2404-Readme.md). GTK3/X11/Xrandr/udev dev headers are
+      # the one real gap — OS/CMakeLists.txt's own pkg_check_modules(gtk+-3.0/x11/xrandr) plus a
+      # direct `-ludev` link need them, and none are vendored (real system libraries, matching
+      # upstream's own SteamOS_CodeLite/OSBase.project). Same package set this template's own docs
+      # already call out for a fresh WSL image.
+      - name: Install OS module's system dependencies (GTK3/X11/Xrandr/udev)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libx11-dev libxrandr-dev libudev-dev
+          echo "DONE: install OS module's system dependencies"
+
+      # libvulkan.so itself (the loader) — Examples/01_Transformations links it directly (see that
+      # CMakeLists.txt's own if(UNIX) comment), and ForgeSrc's own vendored VulkanSDK/bin/Linux/ never
+      # carries the loader itself, only glslangValidator + the validation layer (confirmed directly,
+      # see build-agent.md). Real upstream SteamOS_CodeLite build links the same plain system
+      # libvulkan.so, not a vendored copy.
+      - name: Install Vulkan loader (libvulkan-dev) for Examples/01_Transformations
+        run: |
+          sudo apt-get install -y libvulkan-dev
+          echo "DONE: install Vulkan loader"
+
+      # Same real Forge art assets Examples/01_Transformations needs on Windows (skybox textures +
+      # font, see the Windows job's own comment above for the full "why") — now needed here too since
+      # this example builds on Linux/Vulkan as well (confirmed directly against upstream's own real
+      # SteamOS_CodeLite/01_Transformations.project, and against every real desktop
+      # PathStatement.*.txt inside Art.zip: Windows/SteamOS/MacOS all map RD_TEXTURES at the same
+      # Art/Textures/dds/ path, no separate Linux-specific texture format needed). Separate cache key
+      # ("-linux" suffix) from the Windows job's own entry, purely to avoid any cross-OS cache-write
+      # race between two jobs of the same PR run finishing around the same time and both trying to
+      # populate the same key — the content itself is platform-agnostic and would be identical either
+      # way. unzip's own presence isn't assumed here; python3's stdlib zipfile module is already
+      # confirmed present on every GitHub-hosted runner and needs no extra install, mirroring the
+      # Windows job's own "prefer a built-in over a custom parsing script" choice (Expand-Archive
+      # there, zipfile here — both real, built into their own platform's standard toolset).
+      - name: Get ForgeSrc short SHA
+        id: forgesrc-sha
+        run: |
+          sha=$(git -C ForgeSrc rev-parse --short HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "DONE: ForgeSrc short SHA is $sha"
+
+      - name: Restore cached Forge Art assets
+        id: cache-art
+        uses: actions/cache@v4
+        with:
+          path: ForgeSrc/Art
+          key: forge-art-01_transformations-v1-linux-${{ steps.forgesrc-sha.outputs.sha }}
+
+      - name: Download Forge Art assets (cache miss only)
+        if: steps.cache-art.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ForgeSrc/Art/Textures/dds ForgeSrc/Art/Fonts/TitilliumText
+          python3 -c "
+          import os, urllib.request, zipfile
+          zip_path = os.path.join(os.environ['RUNNER_TEMP'], 'Art.zip')
+          urllib.request.urlretrieve('http://www.conffx.com/Art.zip', zip_path)
+          names = [
+              'Art/Textures/dds/Skybox_right1.tex', 'Art/Textures/dds/Skybox_left2.tex',
+              'Art/Textures/dds/Skybox_top3.tex', 'Art/Textures/dds/Skybox_bottom4.tex',
+              'Art/Textures/dds/Skybox_front5.tex', 'Art/Textures/dds/Skybox_back6.tex',
+              'Art/Fonts/TitilliumText/TitilliumText-Bold.otf',
+          ]
+          with zipfile.ZipFile(zip_path) as z:
+              for n in names:
+                  dest = os.path.join('ForgeSrc', n)
+                  with z.open(n) as src, open(dest, 'wb') as out:
+                      out.write(src.read())
+          os.remove(zip_path)
+          "
+          echo "DONE: download Forge Art assets"
+
+      - name: Build (linux-gcc-dev)
+        run: make build
+
+      - name: Build (linux-gcc-prod)
+        run: make release
