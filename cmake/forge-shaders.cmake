@@ -89,52 +89,59 @@ endif()
 # source through a REAL preprocessor — `cc -E -` on non-Windows (confirmed directly reading utils.py),
 # with "-I<the including file's own directory>" passed first, then any extra -I dirs this script adds
 # below. Several real vendored .list/.fsl files reference their own sibling files with different case
-# than what's actually on disk (Copy.comp.fsl vs. real copy.comp.fsl, ImGui.frag.fsl vs. real
-# imgui.frag.fsl, FontStash*.fsl vs. real fontstash*.fsl, Resources.h vs. real resources.h,
-# FontStash.srt.h vs. real fontstash.srt.h, Basic/Skybox*.fsl vs. real basic/skybox*.fsl,
-# Resources.h.fsl vs. real resources.h.fsl — enumerated by walking the full include graph directly,
-# not guessed one CI round-trip at a time this time, see build-agent.md gotcha for the full table).
-# Silently fine on Windows (case-insensitive NTFS) *and*, critically, silently fine on this repo's own
-# local WSL testing too — WSL's repo checkout lives on /mnt/c (NTFS via DrvFs), which is
-# case-INsensitive exactly like real Windows, so no amount of local `wsl` rebuilding could ever have
-# caught this; only a genuinely native Linux filesystem (this template's own GitHub Actions
-# ubuntu-24.04 runner, a real ext4 checkout) surfaces it. Same shim technique as gotcha #13 in spirit
-# (a one-line forwarding file placed where the real lookup already fails, never touching ForgeSrc's own
-# tree) but implemented via fsl.py's own "-I"/"--includes" passthrough rather than a compiler's
-# -iquote, since the responsible tool here is fsl.py's own subprocess call, not a C++ target's own
-# compile_options. One shared shim directory/variable (FSL_INCLUDE_ARGS) for every FSL invocation in
-# this project — both this file's own 3 SharedAppShaders commands and Examples/01_Transformations's own
-# shaders.list command all pass it, since a couple of these mismatches recur verbatim in both places'
-# own include graphs (e.g. the "Resources.h"-family pattern) and there's no reason to duplicate the
-# shim-generation logic per call site.
+# than what's actually on disk — silently fine on Windows (case-insensitive NTFS) *and*, critically,
+# silently fine on this repo's own local WSL testing too (WSL's repo checkout lives on /mnt/c, NTFS via
+# DrvFs, case-INsensitive exactly like real Windows, so no amount of local `wsl` rebuilding could ever
+# have caught this — only a genuinely native Linux filesystem, this template's own GitHub Actions
+# ubuntu-24.04 runner, surfaces it). Same shim technique as gotcha #13 in spirit (a one-line forwarding
+# file placed where the real lookup already fails, never touching ForgeSrc's own tree) but implemented
+# via fsl.py's own "-I"/"--includes" passthrough rather than a compiler's -iquote, since the responsible
+# tool here is fsl.py's own subprocess call, not a C++ target's own compile_options. One shared shim
+# directory/variable (FSL_INCLUDE_ARGS) for every FSL invocation in this project — both this file's own
+# 3 SharedAppShaders commands and Examples/01_Transformations's own shaders.list command all pass it,
+# since a couple of these mismatches recur verbatim in both places' own include graphs (e.g. the
+# "Resources.h"-family pattern) and there's no reason to duplicate the shim-generation logic per call
+# site. forge_write_fsl_shim(<shim name> <real target>) is a plain positional-argument function, same
+# shape as AssetPipeline/CMakeLists.txt's own forge_add_ispc_kernel() — no cmake_parse_arguments, no
+# table/loop to mentally execute, each call below reads as a single, self-contained "this wrong-case
+# name forwards to this real file" statement.
+function(forge_write_fsl_shim shim_name real_target)
+    set(_forge_fsl_shim_path "${FSL_SHIM_DIR}/${shim_name}")
+    if(NOT EXISTS "${_forge_fsl_shim_path}")
+        file(WRITE "${_forge_fsl_shim_path}" "#include \"${real_target}\"\n")
+    endif()
+endfunction()
+
 set(FSL_INCLUDE_ARGS "")
 if(UNIX)
     set(FSL_SHIM_DIR "${CMAKE_BINARY_DIR}/fsl-generated-includes")
-    set(_forge_fsl_shims
-        "Copy.comp.fsl|${FORGE_ROOT}/Application/Screenshot/Shaders/FSL/copy.comp.fsl"
-        "Copy.comp.srt.h|${FORGE_ROOT}/Application/Screenshot/Shaders/FSL/copy.comp.srt.h"
-        "ImGui.frag.fsl|${FORGE_ROOT}/Application/UI/Shaders/FSL/imgui.frag.fsl"
-        "ImGui.vert.fsl|${FORGE_ROOT}/Application/UI/Shaders/FSL/imgui.vert.fsl"
-        "FontStash.frag.fsl|${FORGE_ROOT}/Application/Fonts/Shaders/FSL/fontstash.frag.fsl"
-        "FontStash2D.vert.fsl|${FORGE_ROOT}/Application/Fonts/Shaders/FSL/fontstash2D.vert.fsl"
-        "FontStash3D.vert.fsl|${FORGE_ROOT}/Application/Fonts/Shaders/FSL/fontstash3D.vert.fsl"
-        "Resources.h|${FORGE_ROOT}/Application/Fonts/Shaders/FSL/resources.h"
-        "FontStash.srt.h|${FORGE_ROOT}/Application/Fonts/Shaders/FSL/fontstash.srt.h"
-        "Basic.frag.fsl|${FORGE_ROOT}/../Examples_3/Unit_Tests/src/01_Transformations/Shaders/FSL/basic.frag.fsl"
-        "Basic.vert.fsl|${FORGE_ROOT}/../Examples_3/Unit_Tests/src/01_Transformations/Shaders/FSL/basic.vert.fsl"
-        "Skybox.frag.fsl|${FORGE_ROOT}/../Examples_3/Unit_Tests/src/01_Transformations/Shaders/FSL/skybox.frag.fsl"
-        "Skybox.vert.fsl|${FORGE_ROOT}/../Examples_3/Unit_Tests/src/01_Transformations/Shaders/FSL/skybox.vert.fsl"
-        "Resources.h.fsl|${FORGE_ROOT}/../Examples_3/Unit_Tests/src/01_Transformations/Shaders/FSL/resources.h.fsl"
-    )
-    foreach(_forge_fsl_shim ${_forge_fsl_shims})
-        string(REPLACE "|" ";" _forge_fsl_shim_parts "${_forge_fsl_shim}")
-        list(GET _forge_fsl_shim_parts 0 _forge_fsl_shim_name)
-        list(GET _forge_fsl_shim_parts 1 _forge_fsl_shim_target)
-        set(_forge_fsl_shim_path "${FSL_SHIM_DIR}/${_forge_fsl_shim_name}")
-        if(NOT EXISTS "${_forge_fsl_shim_path}")
-            file(WRITE "${_forge_fsl_shim_path}" "#include \"${_forge_fsl_shim_target}\"\n")
-        endif()
-    endforeach()
+
+    # ScreenshotShaders.list -> Copy.comp.fsl vs. real copy.comp.fsl -> Copy.comp.srt.h vs. real
+    # copy.comp.srt.h
+    forge_write_fsl_shim(Copy.comp.fsl "${FORGE_ROOT}/Application/Screenshot/Shaders/FSL/copy.comp.fsl")
+    forge_write_fsl_shim(Copy.comp.srt.h "${FORGE_ROOT}/Application/Screenshot/Shaders/FSL/copy.comp.srt.h")
+
+    # UIShaders.list -> ImGui.frag.fsl/ImGui.vert.fsl vs. real imgui.frag.fsl/imgui.vert.fsl
+    forge_write_fsl_shim(ImGui.frag.fsl "${FORGE_ROOT}/Application/UI/Shaders/FSL/imgui.frag.fsl")
+    forge_write_fsl_shim(ImGui.vert.fsl "${FORGE_ROOT}/Application/UI/Shaders/FSL/imgui.vert.fsl")
+
+    # FontShaders.list -> FontStash*.fsl vs. real fontstash*.fsl -> Resources.h vs. real resources.h,
+    # one hop further -> FontStash.srt.h vs. real fontstash.srt.h
+    forge_write_fsl_shim(FontStash.frag.fsl "${FORGE_ROOT}/Application/Fonts/Shaders/FSL/fontstash.frag.fsl")
+    forge_write_fsl_shim(FontStash2D.vert.fsl "${FORGE_ROOT}/Application/Fonts/Shaders/FSL/fontstash2D.vert.fsl")
+    forge_write_fsl_shim(FontStash3D.vert.fsl "${FORGE_ROOT}/Application/Fonts/Shaders/FSL/fontstash3D.vert.fsl")
+    forge_write_fsl_shim(Resources.h "${FORGE_ROOT}/Application/Fonts/Shaders/FSL/resources.h")
+    forge_write_fsl_shim(FontStash.srt.h "${FORGE_ROOT}/Application/Fonts/Shaders/FSL/fontstash.srt.h")
+
+    # 01_Transformations's own shaders.list -> Basic/Skybox*.fsl vs. real basic/skybox*.fsl, and
+    # basic.vert.fsl/skybox*.fsl -> Resources.h.fsl vs. real resources.h.fsl
+    set(_forge_01t_fsl_dir "${FORGE_ROOT}/../Examples_3/Unit_Tests/src/01_Transformations/Shaders/FSL")
+    forge_write_fsl_shim(Basic.frag.fsl "${_forge_01t_fsl_dir}/basic.frag.fsl")
+    forge_write_fsl_shim(Basic.vert.fsl "${_forge_01t_fsl_dir}/basic.vert.fsl")
+    forge_write_fsl_shim(Skybox.frag.fsl "${_forge_01t_fsl_dir}/skybox.frag.fsl")
+    forge_write_fsl_shim(Skybox.vert.fsl "${_forge_01t_fsl_dir}/skybox.vert.fsl")
+    forge_write_fsl_shim(Resources.h.fsl "${_forge_01t_fsl_dir}/resources.h.fsl")
+
     set(FSL_INCLUDE_ARGS -I "${FSL_SHIM_DIR}")
 endif()
 

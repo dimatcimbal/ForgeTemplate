@@ -1,11 +1,14 @@
 cmake_minimum_required(VERSION 3.21)
 
-# FORGE_TOOLSET_COMPILER must be set (via CMakePresets.json's cacheVariables) before project()
-# triggers compiler detection — cmake/forge-toolchain.cmake branches on it to pick clang-cl vs
-# real cl.exe. On Linux this variable plays no role; gcc/clang are found on PATH as normal.
-if(WIN32 AND NOT FORGE_TOOLSET_COMPILER)
+# CMAKE_TOOLCHAIN_FILE must be set (via CMakePresets.json's cacheVariables, one of
+# cmake/forge-toolchain-clang-cl.cmake / cmake/forge-toolchain-msvc.cmake) before project() triggers
+# compiler detection — a bare `cmake -S . -B build` on Windows with no preset would otherwise silently
+# fall through to CMake's own default MSVC auto-detection, which isn't guaranteed to land on the one
+# toolset (VS2019 16.11 / MSVC 14.29.x) Common_3/Application/Config.h whitelists. On Linux this check
+# plays no role; gcc/clang are found on PATH as normal, no toolchain file needed at all.
+if(WIN32 AND NOT CMAKE_TOOLCHAIN_FILE)
     message(FATAL_ERROR
-        "FORGE_TOOLSET_COMPILER not set — configure via one of the CMakePresets.json presets "
+        "No toolchain file set — configure via one of the CMakePresets.json presets "
         "(e.g. `cmake --preset clang-dev`), not a bare `cmake -S . -B build`.")
 endif()
 
@@ -33,8 +36,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(WIN32)
-    # /EHs-c- /GR- (exceptions/RTTI opt-out, matching TF_Shared.props) can't be set via
-    # cmake/forge-toolchain.cmake's CMAKE_CXX_FLAGS_INIT — confirmed directly: CMake's own
+    # /EHs-c- /GR- (exceptions/RTTI opt-out, matching TF_Shared.props) can't be set via either
+    # cmake/forge-toolchain-clang-cl.cmake's or cmake/forge-toolchain-msvc.cmake's own
+    # CMAKE_CXX_FLAGS_INIT — confirmed directly: CMake's own
     # Windows-MSVC.cmake platform module unconditionally appends "/EHsc" to CMAKE_CXX_FLAGS after
     # the toolchain file runs, landing after (and so overriding — cl.exe's D9025 warning, "overriding
     # '/EHs-' with '/EHs'", confirms it) anything set via _INIT. add_compile_options() here, after
@@ -45,6 +49,29 @@ if(WIN32)
     add_compile_options(
         $<$<COMPILE_LANGUAGE:CXX>:/EHs-c->
         $<$<COMPILE_LANGUAGE:CXX>:/GR->
+    )
+endif()
+
+# /Z7 instead of /Zi for clang-cl's own Debug builds only (CMAKE_CXX_COMPILER_ID is "Clang" for
+# clang-cl, "MSVC" for real cl.exe — the reliable way to tell them apart post-project(), no custom
+# variable needed). Same exact "CMAKE_..._INIT gets overridden later" hazard as the /EHsc case just
+# above, confirmed directly the same way: cmake/forge-toolchain-clang-cl.cmake's own
+# CMAKE_CXX_FLAGS_DEBUG_INIT sets "/Z7 ...", but CMake's own Windows-Clang.cmake platform module still
+# force-appends its own default "/Zi ..." afterward regardless — inspecting the real generated
+# build.ninja showed both "/Z7 ... /Zi ..." on the same FLAGS line, /Zi landing last and so winning.
+# add_compile_options() here lands after CMAKE_CXX_FLAGS for real, same as the /EHsc fix. Real,
+# not cosmetic: clang-cl's own PDB writer records each TU's literal (un-collapsed) "../../.."
+# vendored include-chain path rather than canonicalizing it the way cl.exe's preprocessor does, and
+# that literal string can exceed Windows' legacy MAX_PATH (260 chars) purely from its own length even
+# when the real resolved path is short — confirmed via a real CI failure ("path too long", clang-cl's
+# own terse diagnostic) that never reproduced locally, where paths are shorter. /Z7 embeds debug info
+# per-object instead of accumulating it into one shared .pdb, sidestepping the path-recording step
+# that triggers this entirely. cl.exe keeps /Zi (upstream's own real, verified-clean policy, and it
+# doesn't have this hazard) — this block intentionally does not touch the msvc toolchain at all.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    add_compile_options(
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Debug>>:/Z7>
+        $<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Debug>>:/Z7>
     )
 endif()
 
