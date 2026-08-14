@@ -10,15 +10,17 @@ name: Pull Request to Branch Main
 # is a submodule this template never edits, and the only source this repo actually owns is
 # CMakeLists.txt/Makefile/*.cmake, none of which clang-format applies to.
 #
-# One job per platform, each running the Makefile's own host-OS-default dev preset then its
-# -prod counterpart (mirrors DXStarter's own "build debug, then build release" shape) — msvc-dev/
-# msvc-prod on Windows (the one toolchain proven to build this vendored tree with /W4 /WX and zero
-# suppressions, see Makefile's own DEFAULT_PRESET comment) and linux-gcc-dev/linux-gcc-prod on
-# Linux (Makefile's own Linux default). clang-dev/clang-prod and linux-clang-dev/linux-clang-prod
-# are real, working presets too but deliberately not covered here yet, same one-flagship-compiler-
-# per-platform scope DXStarter's own CI used (it never touched its own msvc-dev/msvc-prod presets
-# either) — a matrix expansion to cover all 8 presets is a real, separate scope decision, not done
-# here.
+# Three parallel jobs, not one-per-platform anymore now that Windows itself has two real toolchains:
+# build-windows (msvc-dev/msvc-prod — the one toolchain proven to build this vendored tree with /W4
+# /WX and zero suppressions, see Makefile's own DEFAULT_PRESET comment), build-windows-clang
+# (clang-dev/clang-prod, its own separate job rather than extra sequential steps bolted onto
+# build-windows — real parallel wall-clock time, and each job's own failure is immediately
+# attributable to one toolchain, not muddied by sharing a job with the other), and build-linux
+# (linux-gcc-dev/linux-gcc-prod, Makefile's own Linux default). windows-2022's own published tool
+# manifest already lists LLVM/clang-cl, confirmed directly — no extra install step needed for
+# build-windows-clang beyond what build-windows already has. linux-clang-dev/linux-clang-prod are
+# real, working presets too but deliberately not covered here yet — a 4th job for those is a real,
+# separate scope decision, not done here.
 #
 # Runner images pinned to windows-2022/ubuntu-24.04 explicitly rather than windows-latest/
 # ubuntu-latest — this workflow's own extra setup steps below were verified against those exact
@@ -100,7 +102,7 @@ jobs:
       # Confirmed missing on the windows-2022 runner image, not assumed: its own published component
       # list (actions/runner-images Windows2022-Readme.md) lists
       # Microsoft.VisualStudio.Component.VC.14.29.16.11.ARM/ARM64 but not the .x86.x64 sibling
-      # cmake/forge-toolchain.cmake actually requires (Common_3/Application/Config.h whitelists
+      # cmake/forge-toolchain-msvc.cmake actually requires (Common_3/Application/Config.h whitelists
       # exactly this one MSVC toolset, 14.29.x / VS2019 16.11 / _MSC_VER 1929). Windows SDKs the
       # toolchain file globs for (10.0.22621.0/10.0.26100.0) are already present on this image, so
       # only the compiler toolset itself needs adding.
@@ -131,6 +133,84 @@ jobs:
       - name: Build (msvc-prod)
         shell: pwsh
         run: make release
+
+  build-windows-clang:
+    name: Build (Windows, clang-dev / clang-prod)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Init ForgeSrc submodule (shallow; ForgeWiki skipped, not needed to build)
+        run: |
+          git submodule update --init --depth 1 ForgeSrc
+          echo "DONE: init ForgeSrc submodule"
+
+      - name: Get ForgeSrc short SHA
+        id: forgesrc-sha
+        run: |
+          $sha = git -C ForgeSrc rev-parse --short HEAD
+          echo "sha=$sha" >> $env:GITHUB_OUTPUT
+          echo "DONE: ForgeSrc short SHA is $sha"
+
+      # Own cache key ("-winclang" suffix), distinct from build-windows' own entry, for the same
+      # reason build-linux's own key carries a "-linux" suffix: this job runs in parallel with
+      # build-windows, and two jobs of the same PR run finishing around the same time could otherwise
+      # both try to populate the identical key — the content itself (skybox textures + font) is
+      # platform-agnostic and would be identical either way, this is purely about avoiding a
+      # cache-write race, not a real content difference.
+      - name: Restore cached Forge Art assets
+        id: cache-art
+        uses: actions/cache@v4
+        with:
+          path: ForgeSrc/Art
+          key: forge-art-01_transformations-v1-winclang-${{ steps.forgesrc-sha.outputs.sha }}
+
+      - name: Download Forge Art assets (cache miss only)
+        if: steps.cache-art.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $zipPath = Join-Path $env:RUNNER_TEMP "Art.zip"
+          $tmp = Join-Path $env:RUNNER_TEMP "art-extract"
+          Invoke-WebRequest -Uri "http://www.conffx.com/Art.zip" -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $tmp -Force
+
+          New-Item -ItemType Directory -Force -Path ForgeSrc/Art/Textures/dds, ForgeSrc/Art/Fonts/TitilliumText | Out-Null
+          Get-ChildItem -Path $tmp -Recurse -Filter "Skybox_*.tex" | Copy-Item -Destination ForgeSrc/Art/Textures/dds
+          Get-ChildItem -Path $tmp -Recurse -Filter "TitilliumText-Bold.otf" | Copy-Item -Destination ForgeSrc/Art/Fonts/TitilliumText
+
+          Remove-Item -Recurse -Force $tmp, $zipPath
+          echo "DONE: download Forge Art assets"
+
+      # cmake/forge-toolchain-clang-cl.cmake still discovers/needs the real MSVC 14.29.x toolset dir
+      # (clang-cl compiles against real MSVC headers/libs via -vctoolsdir, it doesn't replace them) —
+      # same install requirement as build-windows' own msvc job, not specific to clang-cl itself.
+      - name: Install MSVC v142 (14.29-16.11) x86/x64 build tools
+        shell: pwsh
+        run: |
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+          $vswhere   = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath    = & $vswhere -latest -property installationPath
+          & $installer modify --installPath "$vsPath" `
+            --add Microsoft.VisualStudio.Component.VC.14.29.16.11.x86.x64 `
+            --quiet --norestart --nocache
+          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
+            throw "vs_installer modify failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Install GNU Make
+        shell: pwsh
+        run: choco install make -y
+
+      - name: Build (clang-dev)
+        shell: pwsh
+        run: make build PRESET=clang-dev
+
+      - name: Build (clang-prod)
+        shell: pwsh
+        run: make release PRESET=clang-dev
 
   build-linux:
     name: Build (Linux, linux-gcc-dev / linux-gcc-prod)
