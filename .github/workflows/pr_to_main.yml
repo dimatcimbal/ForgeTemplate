@@ -26,6 +26,37 @@ name: Pull Request to Branch Main
 # ubuntu-latest — this workflow's own extra setup steps below were verified against those exact
 # images' published tool manifests (actions/runner-images), and "latest" drifting to a newer image
 # could silently invalidate that verification (e.g. a different Windows SDK/VS toolset baseline).
+#
+# Both Windows jobs (build-windows, build-windows-clang) check out to a short custom path (D:\x, a
+# fresh, unambiguous root of its own — not a subdirectory of D:\a, the runner's own reserved work
+# root, sidestepping any question of colliding with its "_temp"/"_actions"/"_tool" bookkeeping dirs
+# entirely) instead of actions/checkout@v4's own default
+# ${{ runner.workspace }}/ForgeTemplate/ForgeTemplate (nested twice, ~34 chars) — a real, confirmed
+# clang-cl hazard specifically (long total paths, see cmake/forge-toolchain-clang-cl.cmake's own
+# header comment for the "path too long" failure this fixes), not applied to build-linux, which has
+# no equivalent MAX_PATH-style limitation at this codebase's actual path depths (ext4's own PATH_MAX
+# is 4096, never realistically hit here) — no reason to add the same complexity to a job that has no
+# real problem to fix.
+#
+# Via a raw `git init`/`fetch`/`checkout` sequence, not actions/checkout@v4's own "path:" input —
+# confirmed directly, the hard way, via a real CI failure: actions/checkout@v4 hard-rejects any "path:"
+# that resolves outside its own default nested workspace ("Repository path 'D:\a' is not under
+# 'D:\a\ForgeTemplate\ForgeTemplate'"), a real built-in restriction, not something toggleable via an
+# input. The manual sequence mirrors exactly what actions/checkout@v4 does internally for a shallow,
+# specific-commit checkout: init an empty repo, fetch just the exact commit under test
+# (${{ github.sha }} — for pull_request events this is already the synthetic merge commit, matching
+# actions/checkout@v4's own default behavior) at --depth 1, then check it out. `git init` (not `git
+# clone`) specifically because it tolerates an already-existing target directory — irrelevant for a
+# fresh D:\x root that nothing else on the runner ever touches, but a real property either way.
+# Anonymous HTTPS clone (no token) — this repo is public, no auth needed for a plain fetch/checkout.
+#
+# Each Windows job sets "defaults.run.working-directory" to D:\x so every later plain "run:" step
+# (which is unaffected by the custom checkout location, unlike the manual clone step itself) operates
+# from the right place automatically — actions/cache@v4's own "path:" input is a different case again:
+# it's a "uses:" action input, not a "run:" step, so it's never covered by defaults.run.working-
+# directory either, and is instead resolved against the still-default $GITHUB_WORKSPACE regardless of
+# where the actual checkout now lives — so its value is written as an explicit absolute D:\x\...
+# path per job below rather than relying on any default.
 
 on:
   pull_request:
@@ -36,11 +67,28 @@ jobs:
   build-windows:
     name: Build (Windows, msvc-dev / msvc-prod)
     runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: D:\x
     steps:
+      # See this workflow's own header comment for why this is a manual git sequence rather than
+      # actions/checkout@v4 (its own "path:" input can't escape its default nested workspace at all).
+      # Explicit working-directory: D:\ overrides the job-level default (D:\x) for this one step only
+      # — real, confirmed necessary: pwsh.exe itself needs to cd into its working directory as part of
+      # process *launch*, before any script content runs, so starting it already inside D:\x fails
+      # outright ("The directory name is invalid") since D:\x doesn't exist until this very step's own
+      # `git init` creates it — a real chicken-and-egg problem, found via a real CI failure. D:\ itself
+      # (the drive root) always exists, so pwsh can launch there regardless. Every later step keeps
+      # using the job-level D:\x default correctly, since it exists by the time they run.
       - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: false
+        shell: pwsh
+        working-directory: D:\
+        run: |
+          git init D:\x
+          git -C D:\x remote add origin "https://github.com/${{ github.repository }}.git"
+          git -C D:\x fetch --depth 1 origin ${{ github.sha }}
+          git -C D:\x checkout FETCH_HEAD
+          echo "DONE: checkout repository"
 
       # ForgeWiki is reference material only (never built, see root CMakeLists.txt) — skipped here
       # to save clone time. ForgeSrc needs a real, full checkout (globbed by every module's own
@@ -70,11 +118,16 @@ jobs:
       # SHA whenever the wanted-file list below changes on its own (e.g. a *different* Examples/*
       # needs more assets, independent of any ForgeSrc bump) — same idea as
       # cmake/forge-shaders.cmake's own explicit file list.
+      # path: is an absolute path (D:\x\ForgeSrc\Art), not the usual relative ForgeSrc/Art — this
+      # action's own "path:" input resolves against $GITHUB_WORKSPACE, not a job's
+      # defaults.run.working-directory (that default only covers "run:" shell steps), and
+      # $GITHUB_WORKSPACE itself still points at the old default nested location even though the
+      # actual checkout now lives at D:\x (see this workflow's own header comment for the full why).
       - name: Restore cached Forge Art assets
         id: cache-art
         uses: actions/cache@v4
         with:
-          path: ForgeSrc/Art
+          path: D:\x\ForgeSrc\Art
           key: forge-art-01_transformations-v1-${{ steps.forgesrc-sha.outputs.sha }}
 
       # Only runs on a genuine cache miss - full download + full extract (no selective-member
@@ -137,11 +190,21 @@ jobs:
   build-windows-clang:
     name: Build (Windows, clang-dev / clang-prod)
     runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: D:\x
     steps:
+      # See build-windows' own step above (same job-level default vs. this step's own working-
+      # directory: D:\ override) for why this needs a plain, always-existing D:\ to launch pwsh in.
       - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: false
+        shell: pwsh
+        working-directory: D:\
+        run: |
+          git init D:\x
+          git -C D:\x remote add origin "https://github.com/${{ github.repository }}.git"
+          git -C D:\x fetch --depth 1 origin ${{ github.sha }}
+          git -C D:\x checkout FETCH_HEAD
+          echo "DONE: checkout repository"
 
       - name: Init ForgeSrc submodule (shallow; ForgeWiki skipped, not needed to build)
         run: |
@@ -161,11 +224,13 @@ jobs:
       # both try to populate the identical key — the content itself (skybox textures + font) is
       # platform-agnostic and would be identical either way, this is purely about avoiding a
       # cache-write race, not a real content difference.
+      # path: absolute (D:\x\ForgeSrc\Art) for the same reason as build-windows' own entry above —
+      # actions/cache@v4's own "path:" input isn't affected by defaults.run.working-directory.
       - name: Restore cached Forge Art assets
         id: cache-art
         uses: actions/cache@v4
         with:
-          path: ForgeSrc/Art
+          path: D:\x\ForgeSrc\Art
           key: forge-art-01_transformations-v1-winclang-${{ steps.forgesrc-sha.outputs.sha }}
 
       - name: Download Forge Art assets (cache miss only)
