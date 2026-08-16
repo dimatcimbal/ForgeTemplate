@@ -65,7 +65,29 @@ name: Pull Request to Branch Main
 # it's a "uses:" action input, not a "run:" step, so it's never covered by defaults.run.working-
 # directory either, and is instead resolved against the still-default $GITHUB_WORKSPACE regardless of
 # where the actual checkout now lives — so its value is written as an explicit absolute D:\x\...
-# path per job below rather than relying on any default.
+# path per job below rather than relying on any default. The same "uses: input isn't covered by
+# defaults.run.working-directory" rule applies to every actions/upload-artifact@v4 step's own "path:"
+# input further below, for the same reason.
+#
+# Build performance reporting — every "Build (<preset>)" step is followed by a "Convert build log
+# to trace (<preset>)" step and an "Upload build report (<preset>)" step, once per dev/prod build
+# (not combined — a separate artifact per build, matching what was actually asked for). ninjatracing
+# (github.com/nico/ninjatracing, a small third-party Apache-2.0 Python script, fetched fresh from
+# its own raw GitHub URL each run rather than vendored — same "fetch external content at CI time
+# instead of committing it" convention as Art.zip below) converts each preset's own .ninja_log into
+# a Chrome Trace Event Format JSON (openable in chrome://tracing / Perfetto / speedscope for a full
+# per-file timeline), uploaded as a build artifact alongside the raw .ninja_log itself for later
+# download/deep-dive. Deliberately no per-build report written to any of these three jobs' own
+# $GITHUB_STEP_SUMMARY, though — the actual goal (see build-report job at the bottom of this file)
+# is a single, cross-platform comparison, not six separate isolated ones, so the only place any
+# human-readable report gets written is that one aggregation job, once all three of these finish and
+# their .ninja_log files are available together at the same time (never true for any one of these
+# three jobs alone). .ninja_log itself is the one build-timing source that's genuinely comparable
+# across all three of this repo's compiler pipelines (msvc/clang-cl/gcc) without any normalization —
+# every preset here uses Ninja as its CMake generator, so the log format is identical regardless of
+# which compiler Ninja happened to invoke underneath, unlike each compiler's own native profiler
+# (clang's -ftime-trace, MSVC's /Bt+, GCC's -ftime-report), which are three different, non-comparable
+# formats.
 
 on:
   pull_request:
@@ -188,13 +210,78 @@ jobs:
         shell: pwsh
         run: choco install make -y
 
+      # Fetched at most once per cache key, reused for both the dev and prod builds below — see
+      # this workflow's own header comment ("Build performance reporting") for why this isn't
+      # vendored/committed outright instead. Pinned to an exact commit SHA rather than a floating
+      # branch name — confirmed directly (GitHub API) that nico/ninjatracing carries zero
+      # tags/releases, so there's no real "version" to pin to short of a commit itself; its default
+      # branch is also "main", not "master" (a "master" ref happens to still resolve too, but
+      # that's incidental, not something to build CI reproducibility on). Bump this SHA by hand if
+      # ninjatracing's own .ninja_log-format handling or CLI ever needs to move forward — the same
+      # bump would need to land in this cache key below too, or a stale cached copy would keep
+      # winning over the new one.
+      # Cached via actions/cache@v4 (same pattern as "Restore cached Forge Art assets" above) since
+      # pinning to an exact SHA makes the fetched content genuinely immutable, not just probably
+      # stable — a real, no-downside cache hit on every run after the first for a given SHA. Own key
+      # suffix ("winmsvc") for the same reason the Art-asset cache keys carry their own per-job
+      # suffix: three parallel jobs racing to populate the identical content under one shared key
+      # would just be redundant cache-write attempts (harmless, actions/cache@v4 no-ops a losing
+      # write rather than failing), but a distinct key per job avoids that race outright rather than
+      # relying on it being harmless.
+      - name: Restore cached ninjatracing
+        id: cache-ninjatracing
+        uses: actions/cache@v4
+        with:
+          path: D:\x\ninjatracing.py
+          key: ninjatracing-fc2924576c9338ff0721f539e6dfa2f3983ae2db-winmsvc
+
+      - name: Download ninjatracing (cache miss only)
+        if: steps.cache-ninjatracing.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/nico/ninjatracing/fc2924576c9338ff0721f539e6dfa2f3983ae2db/ninjatracing" -OutFile ninjatracing.py
+          echo "DONE: download ninjatracing"
+
       - name: Build (msvc-dev)
         shell: pwsh
         run: make build
 
+      - name: Convert build log to trace (msvc-dev)
+        shell: pwsh
+        run: |
+          python ninjatracing.py build-msvc-dev/.ninja_log > build-msvc-dev/ninja-trace.json
+
+      # include-hidden-files: true — confirmed directly via a real run (job 95097269853) that
+      # actions/upload-artifact@v4's own glob matching (@actions/glob under the hood) drops
+      # dotfiles by default: "With the provided path, there will be 1 file uploaded" even though
+      # this path: block lists two, silently skipping .ninja_log every time. Every "Upload build
+      # report" step below carries the same fix, for the same reason.
+      - name: Upload build report (msvc-dev)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ninja-trace-msvc-dev
+          include-hidden-files: true
+          path: |
+            D:\x\build-msvc-dev\ninja-trace.json
+            D:\x\build-msvc-dev\.ninja_log
+
       - name: Build (msvc-prod)
         shell: pwsh
         run: make release
+
+      - name: Convert build log to trace (msvc-prod)
+        shell: pwsh
+        run: |
+          python ninjatracing.py build-msvc-prod/.ninja_log > build-msvc-prod/ninja-trace.json
+
+      - name: Upload build report (msvc-prod)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ninja-trace-msvc-prod
+          include-hidden-files: true
+          path: |
+            D:\x\build-msvc-prod\ninja-trace.json
+            D:\x\build-msvc-prod\.ninja_log
 
   build-windows-clang:
     name: Build (Windows, clang-dev / clang-prod)
@@ -279,13 +366,59 @@ jobs:
         shell: pwsh
         run: choco install make -y
 
+      # See build-windows' own "Restore cached ninjatracing" step above for the full why (pinned
+      # SHA, cache-key-per-job reasoning). "winclang" suffix here instead of "winmsvc" purely to
+      # avoid a cache-write race against build-windows' own parallel job, same as the Art-asset
+      # cache keys below already do — the actual cached content is byte-identical either way.
+      - name: Restore cached ninjatracing
+        id: cache-ninjatracing
+        uses: actions/cache@v4
+        with:
+          path: D:\x\ninjatracing.py
+          key: ninjatracing-fc2924576c9338ff0721f539e6dfa2f3983ae2db-winclang
+
+      - name: Download ninjatracing (cache miss only)
+        if: steps.cache-ninjatracing.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/nico/ninjatracing/fc2924576c9338ff0721f539e6dfa2f3983ae2db/ninjatracing" -OutFile ninjatracing.py
+          echo "DONE: download ninjatracing"
+
       - name: Build (clang-dev)
         shell: pwsh
         run: make build PRESET=clang-dev
 
+      - name: Convert build log to trace (clang-dev)
+        shell: pwsh
+        run: |
+          python ninjatracing.py build-clang-dev/.ninja_log > build-clang-dev/ninja-trace.json
+
+      - name: Upload build report (clang-dev)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ninja-trace-clang-dev
+          include-hidden-files: true
+          path: |
+            D:\x\build-clang-dev\ninja-trace.json
+            D:\x\build-clang-dev\.ninja_log
+
       - name: Build (clang-prod)
         shell: pwsh
         run: make release PRESET=clang-dev
+
+      - name: Convert build log to trace (clang-prod)
+        shell: pwsh
+        run: |
+          python ninjatracing.py build-clang-prod/.ninja_log > build-clang-prod/ninja-trace.json
+
+      - name: Upload build report (clang-prod)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ninja-trace-clang-prod
+          include-hidden-files: true
+          path: |
+            D:\x\build-clang-prod\ninja-trace.json
+            D:\x\build-clang-prod\.ninja_log
 
   build-linux:
     name: Build (Linux, linux-gcc-dev / linux-gcc-prod)
@@ -373,8 +506,99 @@ jobs:
           "
           echo "DONE: download Forge Art assets"
 
+      # See build-windows' own "Restore cached ninjatracing" step (top of this file) for the full
+      # why (pinned SHA, cache-key-per-job reasoning). path: is the plain relative
+      # ninjatracing.py here, unlike the Windows jobs' absolute D:\x\ninjatracing.py — this job
+      # never relocates its checkout the way the Windows jobs do (see this workflow's own header
+      # comment), so the default $GITHUB_WORKSPACE-relative resolution is already correct.
+      - name: Restore cached ninjatracing
+        id: cache-ninjatracing
+        uses: actions/cache@v4
+        with:
+          path: ninjatracing.py
+          key: ninjatracing-fc2924576c9338ff0721f539e6dfa2f3983ae2db-linux
+
+      - name: Download ninjatracing (cache miss only)
+        if: steps.cache-ninjatracing.outputs.cache-hit != 'true'
+        run: |
+          curl -sSL -o ninjatracing.py https://raw.githubusercontent.com/nico/ninjatracing/fc2924576c9338ff0721f539e6dfa2f3983ae2db/ninjatracing
+          echo "DONE: download ninjatracing"
+
       - name: Build (linux-gcc-dev)
         run: make build
 
+      - name: Convert build log to trace (linux-gcc-dev)
+        run: |
+          python3 ninjatracing.py build-linux-gcc-dev/.ninja_log > build-linux-gcc-dev/ninja-trace.json
+
+      - name: Upload build report (linux-gcc-dev)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ninja-trace-linux-gcc-dev
+          include-hidden-files: true
+          path: |
+            build-linux-gcc-dev/ninja-trace.json
+            build-linux-gcc-dev/.ninja_log
+
       - name: Build (linux-gcc-prod)
         run: make release
+
+      - name: Convert build log to trace (linux-gcc-prod)
+        run: |
+          python3 ninjatracing.py build-linux-gcc-prod/.ninja_log > build-linux-gcc-prod/ninja-trace.json
+
+      - name: Upload build report (linux-gcc-prod)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ninja-trace-linux-gcc-prod
+          include-hidden-files: true
+          path: |
+            build-linux-gcc-prod/ninja-trace.json
+            build-linux-gcc-prod/.ninja_log
+
+  # Runs only after all three build jobs finish (needs: below; default behavior, no explicit
+  # if: — skipped outright if any of them failed, rather than comparing partial/missing data),
+  # since this is the only point in the whole workflow where every platform's own .ninja_log is
+  # ever available at the same time — each build job only ever has its own. ubuntu-24.04 (cheap,
+  # fast) is enough here: this job does no real C++ building of its own, just downloads each
+  # build job's own "Upload build report" artifact and runs
+  # .github/scripts/ninja_build_report_collate.py against all three at once, once for dev and
+  # once for prod (this repo's own established "separate Dev and Release reports" convention —
+  # see every "Build report (<preset>)" step above — kept for the collated view too, rather than
+  # mixing dev and prod numbers into one chart where they aren't a fair comparison of the same
+  # build type).
+  build-report:
+    name: Collate build performance report
+    needs: [build-windows, build-windows-clang, build-linux]
+    runs-on: ubuntu-24.04
+    steps:
+      # Only .github/scripts/*.py is needed here — no submodules, no build, same shallow default
+      # depth actions/checkout@v4 already uses.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # Downloads all 6 "Upload build report" artifacts at once (pattern match), each into its
+      # own subdirectory named after the artifact itself (actions/download-artifact@v4's own
+      # default layout, not merge-multiple — six identically-named "ninja-trace.json"/".ninja_log"
+      # files would otherwise collide into one directory).
+      - name: Download all build reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ninja-trace-*
+          path: artifacts
+
+      - name: Collate dev build report
+        run: |
+          python3 .github/scripts/ninja_build_report_collate.py "Dev build comparison" \
+            "msvc-dev=artifacts/ninja-trace-msvc-dev/.ninja_log" \
+            "clang-dev=artifacts/ninja-trace-clang-dev/.ninja_log" \
+            "linux-gcc-dev=artifacts/ninja-trace-linux-gcc-dev/.ninja_log"
+
+      - name: Collate release build report
+        run: |
+          python3 .github/scripts/ninja_build_report_collate.py "Release build comparison" \
+            "msvc-prod=artifacts/ninja-trace-msvc-prod/.ninja_log" \
+            "clang-prod=artifacts/ninja-trace-clang-prod/.ninja_log" \
+            "linux-gcc-prod=artifacts/ninja-trace-linux-gcc-prod/.ninja_log"
