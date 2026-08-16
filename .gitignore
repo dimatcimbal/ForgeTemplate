@@ -1,0 +1,18 @@
+# Scratch working plans — not meant to be committed or kept in sync, see plan/*.md's own header.
+/plan/
+
+# CMake build output
+/build-*/
+compile_commands.json
+
+# JetBrains IDE project files
+.idea/*
+
+# Claude Code local agent/session state
+.claude/
+
+# Python cache for this repo's own .github/scripts/*.py (CI build-report tooling) — the only
+# first-party Python this repo carries. No leading path (matches at any depth, the standard
+# convention) — ForgeSrc's own vendored Python (FSL generators, etc.) is a separate submodule
+# with its own .git, so this repo's .gitignore never reaches into it regardless.
+__pycache__/
