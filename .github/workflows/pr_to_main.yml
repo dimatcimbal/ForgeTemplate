@@ -16,16 +16,25 @@ name: Pull Request to Branch Main
 # (clang-dev/clang-prod, its own separate job rather than extra sequential steps bolted onto
 # build-windows — real parallel wall-clock time, and each job's own failure is immediately
 # attributable to one toolchain, not muddied by sharing a job with the other), and build-linux
-# (linux-gcc-dev/linux-gcc-prod, Makefile's own Linux default). windows-2022's own published tool
+# (linux-gcc-dev/linux-gcc-prod, Makefile's own Linux default). windows-2025's own published tool
 # manifest already lists LLVM/clang-cl, confirmed directly — no extra install step needed for
 # build-windows-clang beyond what build-windows already has. linux-clang-dev/linux-clang-prod are
 # real, working presets too but deliberately not covered here yet — a 4th job for those is a real,
 # separate scope decision, not done here.
 #
-# Runner images pinned to windows-2022/ubuntu-24.04 explicitly rather than windows-latest/
-# ubuntu-latest — this workflow's own extra setup steps below were verified against those exact
-# images' published tool manifests (actions/runner-images), and "latest" drifting to a newer image
-# could silently invalidate that verification (e.g. a different Windows SDK/VS toolset baseline).
+# Both Windows jobs pinned to windows-2025 specifically (not windows-2022, and not the floating
+# windows-latest) — confirmed directly against actions/runner-images' own published manifests that
+# windows-2025 ships the identical LLVM 20.1.8 and identical Visual Studio Enterprise 2022 edition
+# windows-2022 does (same missing-toolset-component gap the "Install MSVC v142" step below already
+# handles either way), so this wasn't a toolchain-version upgrade — it was a genuine, direct
+# experiment against clang-cl's own "path too long" failure (see
+# cmake/forge-toolchain-clang-cl.cmake's own header comment for the full investigation) once every
+# other more targeted hypothesis (checkout path length, /Zi vs /Z7, LLVM version alone, tested
+# locally via a real side-by-side LLVM 20.1.8 install) had been individually ruled out. build-linux
+# stays on ubuntu-24.04 (pinned, not -latest, same reasoning: this workflow's own extra setup steps
+# were verified against that exact image's published tool manifest, and "latest" drifting to a newer
+# image could silently invalidate that verification, e.g. a different Windows SDK/VS toolset or
+# apt package baseline).
 #
 # Both Windows jobs (build-windows, build-windows-clang) check out to a short custom path (D:\x, a
 # fresh, unambiguous root of its own — not a subdirectory of D:\a, the runner's own reserved work
@@ -66,7 +75,7 @@ on:
 jobs:
   build-windows:
     name: Build (Windows, msvc-dev / msvc-prod)
-    runs-on: windows-2022
+    runs-on: windows-2025
     defaults:
       run:
         working-directory: D:\x
@@ -189,7 +198,8 @@ jobs:
 
   build-windows-clang:
     name: Build (Windows, clang-dev / clang-prod)
-    runs-on: windows-2022
+    # See this workflow's own header comment for why windows-2025, not windows-2022.
+    runs-on: windows-2025
     defaults:
       run:
         working-directory: D:\x
