@@ -2,30 +2,24 @@
 # (AssetPipelineCmd) and everything it alone needs: ozz-animation's three real modules (base,
 # runtime, offline), ISPC-compiled BC/ASTC texture compression kernels, and BunyLib's archive format.
 #
-# Windows only — confirmed directly that upstream's own SteamOS_CodeLite (Linux) build doesn't
-# include AssetPipeline/ozz_*/BunyLib/ispc_texcomp at all, only PC_VS2019 does. Extending this to
-# Linux would mean inventing the ISPC custom-build step (object format, target-ISA flags) with no
-# real precedent to verify against, unlike every other module so far — deliberately deferred, see
-# plan/module-split.md.
+# Windows only — upstream's own SteamOS_CodeLite (Linux) build doesn't include AssetPipeline/ozz_*/
+# BunyLib/ispc_texcomp at all, only PC_VS2019 does. Porting to Linux would mean inventing the ISPC
+# custom-build step (object format, target-ISA flags) with no precedent to verify against.
 #
-# Depends on Utilities + OS (in full, not just borrowing one file) — confirmed directly via the real
-# AssetPipelineCmd.vcxproj's own AdditionalDependencies ("OS.lib;ozz_animation.lib;ozz_base.lib;
-# ozz_animation_offline.lib;ispc_texcomp.lib;BunyLib.lib"), not just Utilities as an earlier pass of
-# the plan had guessed. Headless in the sense of never opening a window, not in the sense of no OS
-# dependency.
+# Depends on Utilities + OS in full, not just Utilities — headless in the sense of never opening a
+# window, not in the sense of no OS dependency.
 #
 # The five internal libraries (ozz_base/ozz_animation/ozz_animation_offline/ispc_texcomp/BunyLib)
-# have no ProjectSection(ProjectDependencies) on each other in the real .sln either — cross-library
-# symbol references resolve at AssetPipeline's own final link step, the normal way static libraries
-# work, not via inter-library target_link_libraries.
+# don't link each other via target_link_libraries — cross-library symbol references resolve at
+# AssetPipeline's own final link step, the normal way static libraries work.
 
 if(NOT WIN32)
     return()
 endif()
 
 # --- ozz_base --------------------------------------------------------------------------------
-# Explicit file list, not a directory glob — confirmed exactly matching ozz_base.vcxproj's own
-# <ClCompile> list (7 files across 4 subdirectories, not everything under src/base/).
+# Explicit file list, not a directory glob — matches ozz_base.vcxproj's own curated list, not
+# everything under src/base/.
 set(FORGE_OZZ_ROOT "${FORGE_ROOT}/Resources/AnimationSystem/ThirdParty/OpenSource/ozz-animation")
 add_library(ozz_base STATIC
     "${FORGE_OZZ_ROOT}/src/base/memory/allocator.cc"
@@ -49,13 +43,10 @@ add_library(ozz_animation_offline STATIC ${FORGE_OZZ_ANIMATION_OFFLINE_SOURCES})
 target_link_libraries(ozz_animation_offline PUBLIC Utilities)
 
 # --- BunyLib -----------------------------------------------------------------------------------
-# Buny.c only, plus lz4hc.c and the full zstd/compress/*.c (13 files) compiled directly in — matches
-# the real BunyLib.vcxproj exactly, confirmed directly against its own <ClCompile> list. Neither
-# piece lives in Utilities: lz4hc.c/zstd's compress side are genuinely unused by everything else in
-# this template (Utilities only needs zstd's decompress side, matching upstream's own OS.vcxproj),
-# so BunyLib — the one real consumer — self-contains them, the same pattern meshoptimizer/cgltf
-# already follow for AssetPipeline itself. BunyTool.c (the separate CLI wrapper's own main()) isn't
-# needed here at all — confirmed: AssetPipelineCmd links BunyLib.lib, not a BunyTool executable.
+# Buny.c, plus lz4hc.c and the full zstd/compress/*.c compiled directly in — neither piece lives in
+# Utilities, since lz4hc.c/zstd's compress side are unused by everything else in this template
+# (Utilities only needs zstd's decompress side). BunyTool.c (the separate CLI wrapper's own main())
+# isn't needed here — AssetPipelineCmd links BunyLib.lib, not a BunyTool executable.
 file(GLOB FORGE_BUNYLIB_ZSTD_COMPRESS_SOURCES "${FORGE_ROOT}/Utilities/ThirdParty/OpenSource/zstd/compress/*.c")
 add_library(BunyLib STATIC
     "${FORGE_ROOT}/Tools/BunyArchive/Buny.c"
@@ -65,10 +56,9 @@ add_library(BunyLib STATIC
 target_link_libraries(BunyLib PUBLIC Utilities)
 
 # --- ispc_texcomp --------------------------------------------------------------------------------
-# kernel.ispc/kernel_astc.ispc each compile to 5 real object files (a dispatcher stub plus one per
-# ISA target) via the vendored ispc.exe — not C/C++ source ispc_texcomp.cpp compiles itself, so
-# these are added as pre-built EXTERNAL_OBJECT sources, exactly mirroring what ispc_texcomp.vcxproj's
-# own <CustomBuild> step does (confirmed identical command/flags against the real .vcxproj).
+# kernel.ispc/kernel_astc.ispc each compile to 5 object files (a dispatcher stub plus one per ISA
+# target) via the vendored ispc.exe — not C/C++ source ispc_texcomp.cpp compiles itself, so these
+# are added as pre-built EXTERNAL_OBJECT sources.
 set(FORGE_ISPC_TEXCOMP_ROOT "${FORGE_ROOT}/Tools/ThirdParty/OpenSource/ISPCTextureCompressor")
 set(FORGE_ISPC_EXE "${FORGE_ISPC_TEXCOMP_ROOT}/ISPC/win/ispc.exe")
 set(FORGE_ISPC_INTDIR "${CMAKE_CURRENT_BINARY_DIR}/ispc_kernels")
@@ -133,9 +123,7 @@ target_link_libraries(AssetPipeline PRIVATE
     BunyLib
     winmm
 )
-# WindowsTime.c's #pragma comment(lib, "WinMM.lib") lives in WindowsWindow.cpp instead — a static
-# library only pulls in the specific .obj members its link actually references, and AssetPipeline
-# (headless, no window creation) never references anything from WindowsWindow.cpp.obj, so that
-# pragma's .obj never gets linked in and its directive never fires. Confirmed directly: this is
-# exactly why the real AssetPipelineCmd.vcxproj lists "WinMM.lib" explicitly in its own
-# AdditionalDependencies too, not left to the pragma alone.
+# WindowsTime.c's timeGetTime needs WinMM.lib, but the #pragma comment(lib, "WinMM.lib") that would
+# normally pull it in lives in WindowsWindow.cpp instead — a static library only pulls in the .obj
+# members its link actually references, and AssetPipeline (headless) never references anything from
+# WindowsWindow.cpp.obj, so that pragma never fires. Linked explicitly here instead.

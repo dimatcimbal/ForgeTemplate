@@ -1,17 +1,13 @@
 # Thin convenience wrapper around `cmake --preset`/`cmake --build --preset` — CMake + the 8 presets
-# in CMakePresets.json remain the real build system; nothing here replaces or bypasses that. Adapted
-# from a sibling Forge-based project's own root Makefile (C:/Users/dtcimbal/code/DXThredbo/Makefile),
-# not copied verbatim — that project is Windows-only with 4 presets and vcpkg deps; this one spans
-# Windows + Linux across 8 presets (CMakePresets.json's own hostSystemName gating) and vendors every
-# dependency inside ForgeSrc, so PRESET/RELEASE_PRESET below are derived generically (dev->prod
-# substitution) rather than hardcoded to one compiler, and there's no `deps` target here at all.
+# in CMakePresets.json remain the real build system; nothing here replaces or bypasses that.
+# PRESET/RELEASE_PRESET below are derived generically (dev->prod substitution) so this covers all 8
+# presets, not hardcoded to one compiler.
 #
 # PRESET selects which of the 8 CMakePresets.json presets every target below operates on. Defaulted
-# by host OS (CMakePresets.json's own hostSystemName condition would reject the wrong platform's
-# presets outright), not to a single hardcoded name:
+# by host OS, not to a single hardcoded name:
 #   Windows -> msvc-dev   (real cl.exe: the one toolchain proven to build this vendored tree with
-#                          /W4 /WX and zero suppressions — see cmake/forge-toolchain.cmake's own
-#                          comments on why clang-cl can't carry the same policy)
+#                          /W4 /WX and zero suppressions — see cmake/forge-toolchain-clang-cl.cmake's
+#                          own comments on why clang-cl can't carry the same policy)
 #   Linux   -> linux-gcc-dev
 # Override per-invocation: `make build PRESET=clang-dev`, `make build PRESET=linux-clang-prod`, ...
 ifeq ($(OS),Windows_NT)
@@ -48,9 +44,7 @@ endif
 # Configure project and drop compile_commands.json into the root — CMAKE_EXPORT_COMPILE_COMMANDS is
 # already ON in every preset, but it lands in $(BUILD_DIR) by construction (one per preset, since
 # each preset can pick a different compiler entirely); IDE tooling that expects a single root-level
-# compile_commands.json needs it copied out explicitly. Already gitignored (.gitignore's own
-# "# CMake build output" section lists compile_commands.json specifically) — this convention was
-# anticipated there before this Makefile existed.
+# compile_commands.json needs it copied out explicitly. Already gitignored.
 configure:
 	cmake --preset $(PRESET)
 	cmake -E copy $(BUILD_DIR)/compile_commands.json compile_commands.json
@@ -70,10 +64,9 @@ release: $(RELEASE_DIR)/CMakeCache.txt
 # both `build` and `release` to skip a redundant configure when already done — deliberate: when
 # PRESET is itself already a "-prod" preset (e.g. `make release PRESET=clang-prod`),
 # RELEASE_PRESET's dev->prod patsubst leaves it unchanged, so BUILD_DIR and RELEASE_DIR collide on
-# the exact same path. Two literal rules for the same target is a real duplicate-rule conflict (GNU
-# Make silently keeps only the last one, with a "warning: overriding commands for target" — caught
-# by testing `make -n rebuild PRESET=msvc-prod` directly, not assumed); one pattern rule sidesteps it
-# instead of just tolerating the warning.
+# the exact same path. Two literal rules for the same target is a duplicate-rule conflict (GNU Make
+# silently keeps only the last one, with a "warning: overriding commands for target"); one pattern
+# rule sidesteps it instead of just tolerating the warning.
 build-%/CMakeCache.txt:
 	cmake --preset $*
 	cmake -E copy build-$*/compile_commands.json compile_commands.json
@@ -82,27 +75,21 @@ rebuild: clean configure
 	cmake --build --preset $(PRESET) $(CMAKE_BUILD_ARGS)
 	@echo "DONE: rebuild ($(PRESET))"
 
-# Removes $(BUILD_DIR) only (the current PRESET) — matching CMake's own out-of-source, per-preset
-# binaryDir layout (build-<preset>/), so this never touches any other preset's already-built output.
-# `cmake -E rm -rf` rather than a bare `rm -rf` — cmake.exe is already a hard requirement everywhere
-# this Makefile runs (it's what actually configures/builds), whereas `rm` on Windows only exists via
-# Git Bash/MSYS being on PATH, an assumption GNU Make itself doesn't guarantee (confirmed real: this
-# template's own CI installs GNU Make via choco specifically because it isn't preinstalled, and
-# nothing pins Git Bash's `usr/bin` onto that same PATH). `cmake -E rm` is real, built in, and
-# confirmed directly to behave identically cross-platform (recursive + force, silent on a
-# nonexistent path).
+# Removes $(BUILD_DIR) only (the current PRESET) — never touches any other preset's already-built
+# output. `cmake -E rm -rf` rather than a bare `rm -rf` — cmake.exe is already a hard requirement
+# everywhere this Makefile runs, whereas `rm` on Windows only exists via Git Bash/MSYS being on PATH,
+# an assumption GNU Make itself doesn't guarantee. `cmake -E rm` behaves identically cross-platform
+# (recursive + force, silent on a nonexistent path).
 clean:
 	cmake -E rm -rf $(BUILD_DIR)
 	cmake -E rm -f compile_commands.json
 
 # Removes every preset's build directory at once — worth having distinctly from `clean` given this
-# template spans 8 presets (vs. a single-platform project where the two targets would rarely differ).
-# $(wildcard build-*) is Make's own glob (evaluated fresh at recipe-run time, not stale from
-# Makefile-parse time), not a shell glob — passed as a literal, already-expanded list of directory
-# names to cmake -E rm. Guarded with a shell test because, unlike `clean`'s single always-named
-# $(BUILD_DIR) above, `cmake -E rm -rf` with zero arguments (a fresh checkout with no build-*
-# directories yet) errors outright ("Missing file/directory to remove", confirmed directly) rather
-# than silently no-op'ing the way a bare `rm -rf build-*` did on a shell-glob miss.
+# template spans 8 presets. $(wildcard build-*) is Make's own glob (evaluated fresh at recipe-run
+# time, not stale from Makefile-parse time), passed as a literal, already-expanded list to
+# cmake -E rm. Guarded with a shell test because `cmake -E rm -rf` with zero arguments (a fresh
+# checkout with no build-* directories yet) errors outright ("Missing file/directory to remove")
+# rather than silently no-op'ing.
 clean-all:
 	@dirs="$(wildcard build-*)"; if [ -n "$$dirs" ]; then cmake -E rm -rf $$dirs; fi
 	cmake -E rm -f compile_commands.json
