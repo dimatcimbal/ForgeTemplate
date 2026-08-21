@@ -78,5 +78,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/forge-shaders.cmake")
 
 add_subdirectory(Application)
 add_subdirectory(Scripting)
+add_subdirectory(Ozz)
+add_subdirectory(Animation)
 add_subdirectory(AssetPipeline)
 add_subdirectory(Examples/01_Transformations)
