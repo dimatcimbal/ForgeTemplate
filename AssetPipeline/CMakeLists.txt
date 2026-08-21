@@ -1,43 +1,29 @@
 # Tools/AssetPipeline + its supporting libraries — the offline content-processing CLI tool
-# (AssetPipelineCmd) and everything it alone needs: ozz-animation's three real modules (base,
-# runtime, offline), ISPC-compiled BC/ASTC texture compression kernels, and BunyLib's archive format.
+# (AssetPipelineCmd) and everything it alone needs: ozz_animation_offline, ISPC-compiled BC/ASTC
+# texture compression kernels, and BunyLib's archive format. ozz_base/ozz_animation (runtime) come
+# from the Ozz module instead of being defined here — AssetPipeline needs them too (SkeletonBuilder/
+# AnimationBuilder's own operator() returns real ozz::animation::Skeleton/Animation objects, whose
+# constructors live in ozz_animation's runtime .cc files, not the offline ones this file's own
+# #includes might suggest), but so does Animation/06_MaterialPlayground, cross-platform.
 #
-# Windows only — upstream's own SteamOS_CodeLite (Linux) build doesn't include AssetPipeline/ozz_*/
-# BunyLib/ispc_texcomp at all, only PC_VS2019 does. Porting to Linux would mean inventing the ISPC
-# custom-build step (object format, target-ISA flags) with no precedent to verify against.
+# Windows only — upstream's own SteamOS_CodeLite (Linux) build doesn't include AssetPipeline/
+# ozz_animation_offline/BunyLib/ispc_texcomp at all, only PC_VS2019 does. Porting to Linux would mean
+# inventing the ISPC custom-build step (object format, target-ISA flags) with no precedent to verify
+# against.
 #
 # Depends on Utilities + OS in full, not just Utilities — headless in the sense of never opening a
 # window, not in the sense of no OS dependency.
 #
-# The five internal libraries (ozz_base/ozz_animation/ozz_animation_offline/ispc_texcomp/BunyLib)
-# don't link each other via target_link_libraries — cross-library symbol references resolve at
-# AssetPipeline's own final link step, the normal way static libraries work.
+# The internal libraries defined here (ozz_animation_offline/ispc_texcomp/BunyLib) don't link each
+# other via target_link_libraries — cross-library symbol references resolve at AssetPipeline's own
+# final link step, the normal way static libraries work.
 
 if(NOT WIN32)
     return()
 endif()
 
-# --- ozz_base --------------------------------------------------------------------------------
-# Explicit file list, not a directory glob — matches ozz_base.vcxproj's own curated list, not
-# everything under src/base/.
-set(FORGE_OZZ_ROOT "${FORGE_ROOT}/Resources/AnimationSystem/ThirdParty/OpenSource/ozz-animation")
-add_library(ozz_base STATIC
-    "${FORGE_OZZ_ROOT}/src/base/memory/allocator.cc"
-    "${FORGE_OZZ_ROOT}/src/base/platform.cc"
-    "${FORGE_OZZ_ROOT}/src/base/containers/string_archive.cc"
-    "${FORGE_OZZ_ROOT}/src/base/io/archive.cc"
-    "${FORGE_OZZ_ROOT}/src/base/maths/math_archive.cc"
-    "${FORGE_OZZ_ROOT}/src/base/maths/soa_math_archive.cc"
-    "${FORGE_OZZ_ROOT}/src/base/maths/simd_math_archive.cc"
-)
-target_link_libraries(ozz_base PUBLIC Utilities)
-
-# --- ozz_animation (runtime) -------------------------------------------------------------------
-file(GLOB FORGE_OZZ_ANIMATION_SOURCES "${FORGE_OZZ_ROOT}/src/animation/runtime/*.cc")
-add_library(ozz_animation STATIC ${FORGE_OZZ_ANIMATION_SOURCES})
-target_link_libraries(ozz_animation PUBLIC Utilities)
-
 # --- ozz_animation_offline ----------------------------------------------------------------------
+set(FORGE_OZZ_ROOT "${FORGE_ROOT}/Resources/AnimationSystem/ThirdParty/OpenSource/ozz-animation")
 file(GLOB FORGE_OZZ_ANIMATION_OFFLINE_SOURCES "${FORGE_OZZ_ROOT}/src/animation/offline/*.cc")
 add_library(ozz_animation_offline STATIC ${FORGE_OZZ_ANIMATION_OFFLINE_SOURCES})
 target_link_libraries(ozz_animation_offline PUBLIC Utilities)
